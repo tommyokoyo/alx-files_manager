@@ -23,7 +23,7 @@ class AppController {
 
       const stats = {
         users: numOfUsers,
-        numOFiles,
+        files: numOFiles,
       };
       return res.status(200).json(stats);
     } catch (error) {
