@@ -34,6 +34,10 @@ class DBClient {
   async userCollections() {
     return this.client.db().collection('users');
   }
+
+  async fileCollections() {
+    return this.client.db().collection('files');
+  }
 }
 
 const dbClient = new DBClient();

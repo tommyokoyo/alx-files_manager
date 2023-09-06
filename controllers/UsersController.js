@@ -43,7 +43,7 @@ class UsersController {
     const { 'x-token': token } = req.headers;
 
     if (!token) {
-      return res.status(401).json({ error: 'Unauthorized - No Token' });
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const key = `auth_${token}`;
@@ -64,7 +64,7 @@ class UsersController {
       return res.status(200).json({ id: user._id, email: user.email });
     } catch (error) {
       console.log(error);
-      return res.status(500).json({ error: 'Internal Server Error - error' });
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
   }
 }
