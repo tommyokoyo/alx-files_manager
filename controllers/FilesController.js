@@ -1,14 +1,16 @@
 const { v4: uuid } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+const mime = require('mime-types');
 const { ObjectId } = require('mongodb');
 const redisClient = require('../utils/redis');
 const dbClient = require('../utils/db');
+const fileQueue = require('../utils/fileQueue');
 
 const storagePath = process.env.FOLDER_PATH || '/tmp/files_manager';
 
 class FilesController {
-  static async files(req, res) {
+  static async postUpload(req, res) {
     const { 'x-token': token } = req.headers;
     const {
       name, type, parentId = 0, isPublic = false, data,
@@ -62,6 +64,14 @@ class FilesController {
         if (type === 'folder') {
           const file = await (await dbClient.fileCollections()).insertOne(fileDocument);
 
+          const fileId = file.insertedId;
+
+          if (type === 'image') {
+            fileQueue.add({
+              fileId: fileId.toString(),
+              user: userId,
+            });
+          }
           const newFile = {
             id: file.insertedId.toString(),
             userId: file.ops[0].userId,
@@ -145,7 +155,7 @@ class FilesController {
 
   static async getShow(req, res) {
     const { 'x-token': token } = req.headers;
-    const { parentId } = req.params;
+    const { parentId = 0 } = req.params;
 
     if (!token) {
       return res.status(401).json({ error: 'Unauthorized' });
@@ -161,14 +171,15 @@ class FilesController {
       }
 
       try {
-        const file = await (await dbClient.fileCollections())
-          .find({ userId, parentId });
+        const userFiles = await (await dbClient.fileCollections())
+          .find({ userId, parentId }).toArray();
 
-        if (!file) {
+        if (!userFiles) {
           return res.status(404).json({ error: 'Not found' });
         }
+        console.log(userFiles);
 
-        return res.status(200).json(file);
+        return res.status(200).json(userFiles);
       } catch (error) {
         console.log('Error fetching files: ', error);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -213,6 +224,146 @@ class FilesController {
         console.log('Error fetching files: ', error);
         return res.status(500).json({ error: 'Internal Server Error' });
       }
+    } catch (error) {
+      console.log('Error fetching user sessions: ', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+
+  static async putPublish(req, res) {
+    const { 'x-token': token } = req.headers;
+    const { id } = req.params;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const key = `auth_${token}`;
+
+    try {
+      const userId = await redisClient.get(key);
+
+      if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      try {
+        const filter = { _id: ObjectId(id), userId };
+        const update = { $set: { isPublic: true } };
+        const userFile = await (await dbClient.fileCollections())
+          .findOneAndUpdate(filter, update, { returnOriginal: false });
+
+        if (!userFile) {
+          return res.status(404).json({ error: 'Not found' });
+        }
+
+        const newFile = {
+          id: userFile.value._id,
+          userId: userFile.value.userId,
+          name: userFile.value.name,
+          type: userFile.value.type,
+          isPublic: userFile.value.isPublic,
+          parentId: userFile.value.parentId,
+        };
+        return res.status(201).json(newFile);
+      } catch (error) {
+        console.log('Error updating the file: ', error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+    } catch (error) {
+      console.log('Error fetching user sessions: ', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+
+  static async putUnpublish(req, res) {
+    const { 'x-token': token } = req.headers;
+    const { id } = req.params;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const key = `auth_${token}`;
+
+    try {
+      const userId = await redisClient.get(key);
+
+      if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      try {
+        const filter = { _id: ObjectId(id), userId };
+        const update = { $set: { isPublic: false } };
+        const newUserFile = await (await dbClient.fileCollections())
+          .findOneAndUpdate(filter, update, { returnOriginal: false });
+
+        if (!newUserFile) {
+          return res.status(404).json({ error: 'Not found' });
+        }
+
+        const newFile = {
+          id: newUserFile.value._id,
+          userId: newUserFile.value.userId,
+          name: newUserFile.value.name,
+          type: newUserFile.value.type,
+          isPublic: newUserFile.value.isPublic,
+          parentId: newUserFile.value.parentId,
+        };
+        return res.status(201).json(newFile);
+      } catch (error) {
+        console.log('Error updating the file: ', error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+    } catch (error) {
+      console.log('Error fetching user sessions: ', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+
+  static async getFile(req, res) {
+    const { 'x-token': token } = req.headers;
+    const { id } = req.params;
+    const { size } = req.query;
+
+    if (!token) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const key = `auth_${token}`;
+
+    try {
+      const userId = await redisClient.get(key);
+
+      if (!userId) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      const userFile = await (await dbClient.fileCollections())
+        .findOne({ _id: ObjectId(id) });
+
+      if (!userFile) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      if (!userFile.isPublic && userId !== userFile) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+      if (userFile.file === 'folder') {
+        return res.status(404).json({ error: 'A folder doesn\'t have content' });
+      }
+
+      if (!fs.existsSync(userFile.localPath)) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      const mimetype = mime.lookup(userFile.filename);
+
+      res.setHeader('Content-Type', mimetype);
+
+      const fileStream = fs.createReadStream(userFile.localPath);
+      fileStream.pipe(res);
     } catch (error) {
       console.log('Error fetching user sessions: ', error);
       return res.status(500).json({ error: 'Internal Server Error' });
